@@ -4,7 +4,6 @@ import urllib.request
 import asyncio
 import edge_tts
 import re
-import time
 import requests
 import json
 import os
@@ -25,7 +24,7 @@ os.makedirs(AUDIO_DIR, exist_ok=True)
 
 st.set_page_config(page_title="My Diplomat News Hub", layout="wide")
 st.title("My Diplomat News Hub")
-st.write("คลังข่าวสารและสรุปประเด็นสำคัญ (เตรียมสอบ กต. - สรุปไว ใช้งานง่าย)")
+st.write("คลังข่าวสารและสรุปประเด็นสำคัญ (เตรียมสอบ กต. - โหลดเร็ว ไม่ค้าง)")
 
 if not API_KEY:
     st.error("⚠️ ไม่พบ GEMINI_API_KEY กรุณาตั้งค่า Secrets ในหลังบ้าน Streamlit Cloud ก่อนใช้งาน")
@@ -179,7 +178,7 @@ def scrape_mfa_news(url):
                         full_link = f"https://www.mfa.go.th{href}" if href.startswith('/') else href
                         if not any(a['link'] == full_link for a in articles):
                             articles.append({"title": title, "link": full_link})
-            if len(articles) >= 3:
+            if len(articles) >= 5:
                 break
         return articles
     except Exception:
@@ -194,112 +193,6 @@ def parse_rss_feed(url):
         title = item.find('title').text if item.find('title') is not None else "No Title"
         link = item.find('link').text if item.find('link') is not None else "#"
         articles.append({"title": title, "link": link})
-        if len(articles) >= 3:
+        if len(articles) >= 5:
             break
     return articles
-
-async def generate_audio_file(text, output_path, voice_id):
-    communicate = edge_tts.Communicate(text, voice=voice_id)
-    await communicate.save(output_path)
-
-# ---------------------------------------------------------
-# Main Application Flow
-# ---------------------------------------------------------
-try:
-    is_mfa = "MFA" in selected_source
-    is_thai = is_mfa or ("Thai" in selected_source)
-    is_weekly = "สรุปแถลงข่าวประจำสัปดาห์" in selected_source
-
-    fresh_articles = scrape_mfa_news(selected_url) if is_mfa else parse_rss_feed(selected_url)
-    today_str = datetime.now().strftime("%Y-%m-%d")
-
-    db_updated = False
-    for art in fresh_articles:
-        link = art['link']
-        title = art['title']
-        
-        if (link not in db) or (db[link].get("analysis") is None):
-            db_updated = True
-            raw_analysis = analyze_headline(title, is_weekly, is_mfa, is_thai)
-            screen_text, audio_script = split_analysis(raw_analysis)
-            
-            db[link] = {
-                "title": title,
-                "link": link,
-                "source": selected_source,
-                "added_date": db.get(link, {}).get("added_date", today_str),
-                "is_read": db.get(link, {}).get("is_read", False),
-                "analysis": {
-                    "screen_text": screen_text,
-                    "audio_script": audio_script,
-                    "audio_file": None
-                }
-            }
-
-    if db_updated:
-        save_db(db)
-
-    # Filter DB items
-    source_items = [item for item in db.values() if item.get("source") == selected_source]
-    source_items.sort(key=lambda x: x.get("added_date", ""), reverse=True)
-
-    st.header(f"📰 ข่าวสาร: {selected_source}")
-
-    displayed_count = 0
-    for item in source_items:
-        title = item['title']
-        link = item['link']
-        is_read = item.get('is_read', False)
-        
-        if read_filter == "ยังไม่ได้อ่านเท่านั้น" and is_read:
-            continue
-        if read_filter == "อ่านแล้วเท่านั้น" and not is_read:
-            continue
-            
-        if keyword_filter and keyword_filter.lower() not in title.lower():
-            continue
-
-        displayed_count += 1
-        
-        status_badge = "✅ อ่านแล้ว" if is_read else "🔵 ข่าวใหม่"
-        date_badge = item.get("added_date", "")
-        
-        col_title, col_btn = st.columns([4, 1])
-        with col_title:
-            st.markdown(f"### • [{title}]({link})")
-            st.caption(f"วันที่บันทึก: {date_badge} | สถานะ: {status_badge}")
-        
-        with col_btn:
-            btn_label = "Mark Unread" if is_read else "✓ อ่านแล้ว"
-            if st.button(btn_label, key=f"read_btn_{link}"):
-                db[link]['is_read'] = not is_read
-                save_db(db)
-                st.rerun()
-
-        analysis_data = item.get("analysis") or {}
-        screen_text = analysis_data.get("screen_text")
-        audio_script = analysis_data.get("audio_script", "")
-        
-        if screen_text:
-            st.info(screen_text)
-
-        if st.button(f"🔊 ฟังเสียงสรุปข่าว", key=f"audio_btn_{link}"):
-            with st.spinner("กำลังเตรียมเสียงบรรยาย..."):
-                clean_audio_text = re.sub(r'[*#]', '', audio_script)
-                link_hash = hashlib.md5(link.encode('utf-8')).hexdigest()[:10]
-                audio_filename = os.path.join(AUDIO_DIR, f"audio_{link_hash}.mp3")
-                voice_id = "th-TH-NiwatNeural" if is_thai else "en-GB-RyanNeural"
-                
-                try:
-                    asyncio.run(generate_audio_file(clean_audio_text, audio_filename, voice_id))
-                    st.audio(audio_filename, format="audio/mp3", autoplay=True)
-                except Exception:
-                    st.error("ไม่สามารถสร้างไฟล์เสียงได้ในขณะนี้")
-
-        st.write("---")
-
-    if displayed_count == 0:
-        st.info("ไม่มีรายการข่าวที่ตรงกับเงื่อนไขตัวกรองในขณะนี้")
-
-except Exception as e:
-    st.error(f"เกิดข้อผิดพลาดในการโหลดข่าว: {e}")
