@@ -14,26 +14,23 @@ from bs4 import BeautifulSoup
 from google import genai
 
 # ---------------------------------------------------------
-# Secure API Key Configuration (ดึงค่าจากหลังบ้าน Streamlit Secrets)
+# Secure API Key Configuration
 # ---------------------------------------------------------
 API_KEY = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
 
 DB_FILE = "news_db.json"
 AUDIO_DIR = "audio_cache"
 
-# สร้างโฟลเดอร์สำหรับเก็บไฟล์เสียงล่วงหน้า
 os.makedirs(AUDIO_DIR, exist_ok=True)
 
 st.set_page_config(page_title="My Diplomat News Hub", layout="wide")
 st.title("My Diplomat News Hub")
-st.write("คลังข่าวสารและสรุปประเด็นสำคัญ (เตรียมสอบ กต. - โหลดเร็วครั้งเดียวจบ พร้อมไฟล์เสียง)")
+st.write("คลังข่าวสารและสรุปประเด็นสำคัญ (เตรียมสอบ กต. - สรุปไว ใช้งานง่าย)")
 
-# ตรวจสอบ API Key
 if not API_KEY:
     st.error("⚠️ ไม่พบ GEMINI_API_KEY กรุณาตั้งค่า Secrets ในหลังบ้าน Streamlit Cloud ก่อนใช้งาน")
     st.stop()
 
-# Initialize Gemini client
 @st.cache_resource
 def get_gemini_client(key):
     return genai.Client(api_key=key)
@@ -74,7 +71,7 @@ db = load_db()
 # News Sources
 rss_sources = {
     "🇹🇭 MFA - สรุปแถลงข่าวประจำสัปดาห์": "https://www.mfa.go.th/th/content-category/%E0%B8%AA%E0%B8%A3%E0%B8%B8%E0%B8%9B%E0%B9%81%E0%B8%96%E0%B8%A5%E0%B8%87%E0%B8%82%E0%B9%88%E0%B8%B2%E0%B8%A7%E0%B8%9B%E0%B8%A3%E0%B8%B0%E0%B8%88%E0%B8%B3%E0%B8%AA%E0%B8%B1%E0%B8%9B%E0%B8%94%E0%B8%B2%E0%B8%AB%E0%B9%8C",
-    "🇹🇭 MFA - ข่าวสารนิเทศ / ข่าวเด่น": "https://www.mfa.go.th/th/content-category/%E0%B8%82%E0%B9%88%E0%B8%B2%E0%B8%A3%E0%B8%A8%E0%B8%B2%E0%B8%99%E0%B8%B4%E0%B9%80%E0%B8%97%E0%B8%A8",
+    "🇹🇭 MFA - ข่าวสารนิเทศ / ข่าวเด่น": "https://www.mfa.go.th/th/content-category/%E0%B8%82%E0%B9%88%E0%B8%B2%E0%B8%AA%E0%B8%B2%E0%B8%A3%E0%B8%B8%E0%B8%9B%E0%B9%81%E0%B8%96%E0%B8%A5%E0%B8%87%E0%B8%82%E0%B9%88%E0%B8%B2%E0%B8%A7%E0%B8%9B%E0%B8%A3%E0%B8%B0%E0%B8%88%E0%B8%B3%E0%B8%AA%E0%B8%B1%E0%B8%9B%E0%B8%94%E0%B8%B2%E0%B8%AB%E0%B9%8C",
     "BBC Thai (ข่าวบีบีซีไทย)": "https://news.google.com/rss/search?q=site:bbc.com/thai&hl=th&gl=TH&ceid=TH:th",
     "Thailand News (Thai PBS)": "https://news.google.com/rss/search?q=site:thaipbs.or.th&hl=th&gl=TH&ceid=TH:th",
     "ASEAN / Asia News (CNA)": "https://www.channelnewsasia.com/api/v1/rss-outbound-feed?_format=xml&category=6511",
@@ -94,7 +91,7 @@ selected_url = rss_sources[selected_source]
 # ---------------------------------------------------------
 def analyze_headline(headline_title, is_weekly_summary, is_mfa_source, is_thai_source):
     client = get_gemini_client(API_KEY)
-    audio_language_instruction = "NATURAL THAI LANGUAGE (ภาษาไทยที่เป็นธรรมชาติสำหรับเสียงพูดบรรยายข่าว)" if is_thai_source else "ENGLISH"
+    audio_language_instruction = "NATURAL THAI LANGUAGE" if is_thai_source else "ENGLISH"
 
     if is_mfa_source:
         formatting_rules = """
@@ -105,7 +102,7 @@ def analyze_headline(headline_title, is_weekly_summary, is_mfa_source, is_thai_s
         - Extract concrete diplomatic facts specifically answering:
           1. **ผู้แทน & เวทีประชุม:** (ใครเข้าร่วม ประชุมอะไร ครั้งที่เท่าไหร่)
           2. **ประเด็นสาระสำคัญ:** (ข้อเท็จจริง สิ่งที่หารือ หรือผลการประชุม)
-          3. **จุดยืน/บทบาทพิเศษของไทย:** (ไทยชูคอนเซ็ปต์อะไร เช่น Bridge Builder, การสมัครสมาชิก UNHCR, บทบาทในความขัดแย้ง หรือ stance พิเศษ)
+          3. **จุดยืน/บทบาทพิเศษของไทย:** (ไทยชูคอนเซ็ปต์อะไร เช่น Bridge Builder, การสมัครสมาชิก UNHCR หรือ stance พิเศษ)
 
         OUTPUT 1 FORMAT:
         - **ผู้แทน & เวทีประชุม:** [สรุปผู้แทนและเวที]
@@ -147,24 +144,17 @@ def analyze_headline(headline_title, is_weekly_summary, is_mfa_source, is_thai_s
     - Do NOT read out metadata, section titles, or scores.
     - If THAI, write purely in native Thai script. Abbreviate titles naturally (e.g., 'รมว.กต.').
     - For MFA news: Speak WHO attended WHAT meeting, WHAT was decided, and WHAT key position Thailand highlighted.
-    - For general news: Speak the core factual news directly and naturally.
     """
     
     models_to_try = ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.5-flash-lite']
-    last_error = ""
-
     for model_name in models_to_try:
         try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-            )
+            response = client.models.generate_content(model=model_name, contents=prompt)
             return response.text
-        except Exception as e:
-            last_error = str(e)
+        except Exception:
             continue
             
-    return f"AI Analysis Error: {last_error}"
+    return "AI Analysis Error: Unable to summarize at this moment."
 
 def split_analysis(full_text):
     if "===AUDIO_SCRIPT===" in full_text:
@@ -172,12 +162,11 @@ def split_analysis(full_text):
         return parts[0].strip(), parts[1].strip()
     return full_text, full_text
 
-# Scrapers & Feed Readers
 def scrape_mfa_news(url):
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-    ignored_keywords = ["ประวัติ", "โครงสร้าง", "นโยบาย", "ภารกิจ", "อำนาจหน้าที่", "ผู้บริหาร", "ติดต่อ", "แผนผัง", "คำถามที่พบบ่อย", "อ่านต่อ", "ความเป็นส่วนตัว", "นโยบายคุกกี้", "บริการประชาชน", "สวัสดิการ"]
+    headers = {"User-Agent": "Mozilla/5.0"}
+    ignored_keywords = ["ประวัติ", "โครงสร้าง", "นโยบาย", "ภารกิจ", "อำนาจหน้าที่", "ผู้บริหาร", "ติดต่อ", "คำถามที่พบบ่อย"]
     try:
-        response = requests.get(url, headers=headers, timeout=8)
+        response = requests.get(url, headers=headers, timeout=5)
         response.encoding = 'utf-8'
         soup = BeautifulSoup(response.text, 'html.parser')
         articles = []
@@ -190,7 +179,7 @@ def scrape_mfa_news(url):
                         full_link = f"https://www.mfa.go.th{href}" if href.startswith('/') else href
                         if not any(a['link'] == full_link for a in articles):
                             articles.append({"title": title, "link": full_link})
-            if len(articles) >= 8:
+            if len(articles) >= 3:
                 break
         return articles
     except Exception:
@@ -198,14 +187,14 @@ def scrape_mfa_news(url):
 
 def parse_rss_feed(url):
     req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-    xml_data = urllib.request.urlopen(req).read()
+    xml_data = urllib.request.urlopen(req, timeout=5).read()
     root = ET.fromstring(xml_data)
     articles = []
     for item in root.findall('./channel/item'):
         title = item.find('title').text if item.find('title') is not None else "No Title"
         link = item.find('link').text if item.find('link') is not None else "#"
         articles.append({"title": title, "link": link})
-        if len(articles) >= 8:
+        if len(articles) >= 3:
             break
     return articles
 
@@ -231,21 +220,9 @@ try:
         
         if (link not in db) or (db[link].get("analysis") is None):
             db_updated = True
-            
             raw_analysis = analyze_headline(title, is_weekly, is_mfa, is_thai)
             screen_text, audio_script = split_analysis(raw_analysis)
             
-            clean_audio_text = re.sub(r'[*#]', '', audio_script)
-            link_hash = hashlib.md5(link.encode('utf-8')).hexdigest()[:10]
-            audio_filename = os.path.join(AUDIO_DIR, f"audio_{link_hash}.mp3")
-            
-            voice_id = "th-TH-NiwatNeural" if is_thai else "en-GB-RyanNeural"
-            
-            try:
-                asyncio.run(generate_audio_file(clean_audio_text, audio_filename, voice_id))
-            except Exception:
-                audio_filename = None
-
             db[link] = {
                 "title": title,
                 "link": link,
@@ -255,10 +232,9 @@ try:
                 "analysis": {
                     "screen_text": screen_text,
                     "audio_script": audio_script,
-                    "audio_file": audio_filename
+                    "audio_file": None
                 }
             }
-            time.sleep(1.0)
 
     if db_updated:
         save_db(db)
@@ -267,7 +243,7 @@ try:
     source_items = [item for item in db.values() if item.get("source") == selected_source]
     source_items.sort(key=lambda x: x.get("added_date", ""), reverse=True)
 
-    st.header(f"📰 ข่าวสาร: {selected_source} (คลังข่าวย้อนหลัง)")
+    st.header(f"📰 ข่าวสาร: {selected_source}")
 
     displayed_count = 0
     for item in source_items:
@@ -301,14 +277,24 @@ try:
                 st.rerun()
 
         analysis_data = item.get("analysis") or {}
-        
         screen_text = analysis_data.get("screen_text")
+        audio_script = analysis_data.get("audio_script", "")
+        
         if screen_text:
             st.info(screen_text)
 
-        audio_file = analysis_data.get("audio_file")
-        if audio_file and os.path.exists(audio_file):
-            st.audio(audio_file, format="audio/mp3")
+        if st.button(f"🔊 ฟังเสียงสรุปข่าว", key=f"audio_btn_{link}"):
+            with st.spinner("กำลังเตรียมเสียงบรรยาย..."):
+                clean_audio_text = re.sub(r'[*#]', '', audio_script)
+                link_hash = hashlib.md5(link.encode('utf-8')).hexdigest()[:10]
+                audio_filename = os.path.join(AUDIO_DIR, f"audio_{link_hash}.mp3")
+                voice_id = "th-TH-NiwatNeural" if is_thai else "en-GB-RyanNeural"
+                
+                try:
+                    asyncio.run(generate_audio_file(clean_audio_text, audio_filename, voice_id))
+                    st.audio(audio_filename, format="audio/mp3", autoplay=True)
+                except Exception:
+                    st.error("ไม่สามารถสร้างไฟล์เสียงได้ในขณะนี้")
 
         st.write("---")
 
