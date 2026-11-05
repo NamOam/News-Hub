@@ -161,7 +161,7 @@ except Exception:
     pass
 
 # ---------------------------------------------------------
-# Gemini Summarizer Engine (อัปเดตชื่อโมเดลเป็น gemini-2.5-flash)
+# Gemini Summarizer Engine (อัปเดตเป็น gemini-3.8-flash และ 3.6-flash)
 # ---------------------------------------------------------
 def analyze_headline(headline_title, is_mfa_source, is_thai_source):
     client = get_gemini_client(API_KEY)
@@ -212,18 +212,17 @@ def analyze_headline(headline_title, is_mfa_source, is_thai_source):
         f"- If THAI, write purely in native Thai script. Abbreviate titles naturally."
     )
     
-    # โมเดลมาตรฐานหลักของ google-genai SDK
-    models_to_try = ['gemini-2.5-flash', 'gemini-2.0-flash-exp']
+    # ใช้ชื่อรุ่น Gemini ล่าสุด
+    models_to_try = ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.5-flash-lite']
     for model_name in models_to_try:
         try:
             response = client.models.generate_content(model=model_name, contents=prompt)
             if response and hasattr(response, 'text') and response.text:
                 return response.text
-        except Exception as err:
-            st.error(f"Error calling {model_name}: {err}")
+        except Exception:
             continue
             
-    return "AI Analysis Error: Unable to summarize at this moment."
+    return None
 
 def split_analysis(full_text):
     if "===AUDIO_SCRIPT===" in full_text:
@@ -280,12 +279,16 @@ for item in source_items:
 
     analysis_data = item.get("analysis")
     
-    if not analysis_data:
-        if st.button("✨ สรุปเนื้อหาด้วย AI", key=f"sum_btn_{link}"):
+    # เช็คว่ามีข้อมูลสรุป หรือเป็นข้อความ Error เก่าค้างอยู่หรือไม่
+    has_valid_analysis = analysis_data and isinstance(analysis_data, dict) and "screen_text" in analysis_data and "AI Analysis Error" not in str(analysis_data.get("screen_text"))
+
+    if not has_valid_analysis:
+        btn_text = "🔄 ลองสรุปใหม่อีกครั้ง" if analysis_data else "✨ สรุปเนื้อหาด้วย AI"
+        if st.button(btn_text, key=f"sum_btn_{link}"):
             with st.spinner("Gemini กำลังวิเคราะห์ประเด็นข่าว..."):
                 raw_analysis = analyze_headline(title, is_mfa, is_thai)
                 
-                if "AI Analysis Error" not in raw_analysis:
+                if raw_analysis:
                     screen_text, audio_script = split_analysis(raw_analysis)
                     db[link]['analysis'] = {
                         "screen_text": screen_text,
@@ -295,7 +298,7 @@ for item in source_items:
                     save_db(db)
                     st.rerun()
                 else:
-                    st.error(raw_analysis)
+                    st.error("ไม่สามารถเรียก Gemini API ได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง")
     else:
         screen_text = analysis_data.get("screen_text")
         audio_script = analysis_data.get("audio_script", "")
