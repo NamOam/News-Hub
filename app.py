@@ -24,7 +24,7 @@ os.makedirs(AUDIO_DIR, exist_ok=True)
 
 st.set_page_config(page_title="My Diplomat News Hub", layout="wide")
 st.title("My Diplomat News Hub")
-st.write("คลังข่าวสารและสรุปประเด็นสำคัญ (เตรียมสอบ กต. - โหลดเร็ว ไม่ค้าง)")
+st.write("คลังข่าวสารและสรุปประเด็นสำคัญ (เตรียมสอบ กต. - โหลดเร็ว อัปเดตอัตโนมัติ)")
 
 if not API_KEY:
     st.error("⚠️ ไม่พบ GEMINI_API_KEY กรุณาตั้งค่า Secrets ในหลังบ้าน Streamlit Cloud ก่อนใช้งาน")
@@ -78,7 +78,7 @@ rss_sources = {
 }
 
 # ---------------------------------------------------------
-# ALWAYS RENDER SIDEBAR FIRST (ไม่โดนข้ามแน่นอน)
+# Sidebar Controls
 # ---------------------------------------------------------
 st.sidebar.header("📌 ตัวกรองข่าว & ตั้งค่า")
 selected_source = st.sidebar.selectbox("เลือกแหล่งข่าว:", list(rss_sources.keys()))
@@ -86,6 +86,79 @@ read_filter = st.sidebar.radio("สถานะการอ่าน:", ["ทั
 keyword_filter = st.sidebar.text_input("ค้นหาด้วยคีย์เวิร์ด:", "")
 
 selected_url = rss_sources[selected_source]
+
+# ---------------------------------------------------------
+# Fast Scrapers with Strict Timeouts (ดึงออโต้ไม่ค้าง)
+# ---------------------------------------------------------
+def scrape_mfa_news(url):
+    headers = {"User-Agent": "Mozilla/5.0"}
+    ignored_keywords = ["ประวัติ", "โครงสร้าง", "นโยบาย", "ภารกิจ", "อำนาจหน้าที่", "ผู้บริหาร", "ติดต่อ", "คำถามที่พบบ่อย"]
+    try:
+        response = requests.get(url, headers=headers, timeout=3)
+        response.encoding = 'utf-8'
+        soup = BeautifulSoup(response.text, 'html.parser')
+        articles = []
+        for card in soup.find_all('a', href=True):
+            href = card['href']
+            if '/content/' in href:
+                title = card.get_text(strip=True)
+                if title and len(title) > 12:
+                    if not any(bad_word in title for bad_word in ignored_keywords):
+                        full_link = f"https://www.mfa.go.th{href}" if href.startswith('/') else href
+                        if not any(a['link'] == full_link for a in articles):
+                            articles.append({"title": title, "link": full_link})
+            if len(articles) >= 6:
+                break
+        return articles
+    except Exception:
+        return []
+
+def parse_rss_feed(url):
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        xml_data = urllib.request.urlopen(req, timeout=3).read()
+        root = ET.fromstring(xml_data)
+        articles = []
+        audio_video_keywords = ["audio", "video", "listen:", "podcast", "ฟัง:", "คลิป"]
+        
+        for item in root.findall('./channel/item'):
+            title = item.find('title').text if item.find('title') is not None else "No Title"
+            link = item.find('link').text if item.find('link') is not None else "#"
+            
+            if any(kw in title.lower() for kw in audio_video_keywords):
+                continue
+                
+            articles.append({"title": title, "link": link})
+            if len(articles) >= 6:
+                break
+        return articles
+    except Exception:
+        return []
+
+# AUTO-FETCH ENGINE: ดึงข่าวของหมวดที่เลือกอัตโนมัติทุกครั้งที่โหลดหน้าเว็บ
+try:
+    is_mfa_src = "MFA" in selected_source
+    fresh_articles = scrape_mfa_news(selected_url) if is_mfa_src else parse_rss_feed(selected_url)
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    
+    db_updated = False
+    for art in fresh_articles:
+        link = art['link']
+        title = art['title']
+        if link not in db:
+            db_updated = True
+            db[link] = {
+                "title": title,
+                "link": link,
+                "source": selected_source,
+                "added_date": today_str,
+                "is_read": False,
+                "analysis": None
+            }
+    if db_updated:
+        save_db(db)
+except Exception:
+    pass
 
 # ---------------------------------------------------------
 # Gemini Summarizer Engine
@@ -155,77 +228,17 @@ def split_analysis(full_text):
         return parts[0].strip(), parts[1].strip()
     return full_text, full_text
 
-def scrape_mfa_news(url):
-    headers = {"User-Agent": "Mozilla/5.0"}
-    ignored_keywords = ["ประวัติ", "โครงสร้าง", "นโยบาย", "ภารกิจ", "อำนาจหน้าที่", "ผู้บริหาร", "ติดต่อ", "คำถามที่พบบ่อย"]
-    try:
-        response = requests.get(url, headers=headers, timeout=5)
-        response.encoding = 'utf-8'
-        soup = BeautifulSoup(response.text, 'html.parser')
-        articles = []
-        for card in soup.find_all('a', href=True):
-            href = card['href']
-            if '/content/' in href:
-                title = card.get_text(strip=True)
-                if title and len(title) > 12:
-                    if not any(bad_word in title for bad_word in ignored_keywords):
-                        full_link = f"https://www.mfa.go.th{href}" if href.startswith('/') else href
-                        if not any(a['link'] == full_link for a in articles):
-                            articles.append({"title": title, "link": full_link})
-            if len(articles) >= 5:
-                break
-        return articles
-    except Exception:
-        return []
-
-def parse_rss_feed(url):
-    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-    xml_data = urllib.request.urlopen(req, timeout=5).read()
-    root = ET.fromstring(xml_data)
-    articles = []
-    for item in root.findall('./channel/item'):
-        title = item.find('title').text if item.find('title') is not None else "No Title"
-        link = item.find('link').text if item.find('link') is not None else "#"
-        articles.append({"title": title, "link": link})
-        if len(articles) >= 5:
-            break
-    return articles
-
 async def generate_audio_file(text, output_path, voice_id):
     communicate = edge_tts.Communicate(text, voice=voice_id)
     await communicate.save(output_path)
 
 # ---------------------------------------------------------
-# Main Application Flow
+# Main Display Flow
 # ---------------------------------------------------------
+st.header(f"📰 ข่าวสาร: {selected_source}")
+
 is_mfa = "MFA" in selected_source
 is_thai = is_mfa or ("Thai" in selected_source)
-
-col_head, col_fetch = st.columns([3, 1])
-with col_head:
-    st.header(f"📰 ข่าวสาร: {selected_source}")
-with col_fetch:
-    if st.button("🔄 ดึงข่าวใหม่ล่าสุด", use_container_width=True):
-        with st.spinner("กำลังเชื่อมต่อดึงข่าวใหม่..."):
-            fresh_articles = scrape_mfa_news(selected_url) if is_mfa else parse_rss_feed(selected_url)
-            today_str = datetime.now().strftime("%Y-%m-%d")
-            db_updated = False
-            for art in fresh_articles:
-                link = art['link']
-                title = art['title']
-                if link not in db:
-                    db_updated = True
-                    db[link] = {
-                        "title": title,
-                        "link": link,
-                        "source": selected_source,
-                        "added_date": today_str,
-                        "is_read": False,
-                        "analysis": None
-                    }
-            if db_updated:
-                save_db(db)
-            st.rerun()
 
 # Filter DB items
 source_items = [item for item in db.values() if item.get("source") == selected_source]
@@ -302,4 +315,4 @@ for item in source_items:
     st.write("---")
 
 if displayed_count == 0:
-    st.info("ยังไม่มีข่าวในหมวดหมู่นี้ในคลัง สามารถกดปุ่ม '🔄 ดึงข่าวใหม่ล่าสุด' มุมขวาบนเพื่ออัปเดตข่าวใหม่ได้ทันทีครับ")
+    st.info("กำลังดึงข่าวสดใหม่สำหรับหมวดนี้ หรือไม่พบข่าวตามตัวกรองที่คุณเลือกครับ")
