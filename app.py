@@ -78,27 +78,3 @@ rss_sources = {
 }
 
 # Sidebar Controls
-st.sidebar.header("📌 ตัวกรองข่าว & ตั้งค่า")
-selected_source = st.sidebar.selectbox("เลือกแหล่งข่าว:", list(rss_sources.keys()))
-read_filter = st.sidebar.radio("สถานะการอ่าน:", ["ทั้งหมด", "ยังไม่ได้อ่านเท่านั้น", "อ่านแล้วเท่านั้น"])
-keyword_filter = st.sidebar.text_input("ค้นหาด้วยคีย์เวิร์ด:", "")
-
-selected_url = rss_sources[selected_source]
-
-# ---------------------------------------------------------
-# Gemini Summarizer Engine
-# ---------------------------------------------------------
-def analyze_headline(headline_title, is_mfa_source, is_thai_source):
-    client = get_gemini_client(API_KEY)
-    audio_language_instruction = "NATURAL THAI LANGUAGE" if is_thai_source else "ENGLISH"
-
-    if is_mfa_source:
-        formatting_rules = """
-        Language for OUTPUT 1: THAI ONLY.
-        CRITICAL MFA FORMATTING RULES:
-        - DO NOT put any relevance score.
-        - Shorten official titles immediately (e.g., 'รองนายกรัฐมนตรีและรัฐมนตรีว่าการกระทรวงการต่างประเทศ' -> 'รมว.กต.').
-        - Extract concrete diplomatic facts specifically answering:
-          1. **ผู้แทน & เวทีประชุม:** (ใครเข้าร่วม ประชุมอะไร ครั้งที่เท่าไหร่)
-          2. **ประเด็นสาระสำคัญ:** (ข้อเท็จจริง สิ่งที่หารือ หรือผลการประชุม)
-          3. **จุดยืน/บทบาทพิเศษของไทย:** (ไทยช
