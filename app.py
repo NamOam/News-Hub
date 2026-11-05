@@ -88,7 +88,7 @@ keyword_filter = st.sidebar.text_input("ค้นหาด้วยคีย์�
 selected_url = rss_sources[selected_source]
 
 # ---------------------------------------------------------
-# Fast Scrapers with Strict Timeouts (ดึงออโต้ไม่ค้าง)
+# Fast Scrapers with Strict Timeouts
 # ---------------------------------------------------------
 def scrape_mfa_news(url):
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -135,7 +135,7 @@ def parse_rss_feed(url):
     except Exception:
         return []
 
-# AUTO-FETCH ENGINE: ดึงข่าวอัตโนมัติเมื่อเลือกหมวด
+# AUTO-FETCH ENGINE
 try:
     is_mfa_src = "MFA" in selected_source
     fresh_articles = scrape_mfa_news(selected_url) if is_mfa_src else parse_rss_feed(selected_url)
@@ -161,7 +161,7 @@ except Exception:
     pass
 
 # ---------------------------------------------------------
-# Gemini Summarizer Engine (ปรับชื่อรุ่นเป็น 1.5-flash แล้ว)
+# Gemini Summarizer Engine (อัปเดตชื่อโมเดลเป็น gemini-2.5-flash)
 # ---------------------------------------------------------
 def analyze_headline(headline_title, is_mfa_source, is_thai_source):
     client = get_gemini_client(API_KEY)
@@ -175,7 +175,7 @@ def analyze_headline(headline_title, is_mfa_source, is_thai_source):
             "- Shorten official titles immediately (e.g., 'รองนายกรัฐมนตรีและรัฐมนตรีว่าการกระทรวงการต่างประเทศ' -> 'รมว.กต.').\n"
             "- Extract concrete diplomatic facts specifically answering:\n"
             "  1. **ผู้แทน & เวทีประชุม:** (ใครเข้าร่วม ประชุมอะไร ครั้งที่เท่าไหร่)\n"
-            "  2. **ประเดประเด็นสาระสำคัญ:** (ข้อเท็จจริง สิ่งที่หารือ หรือผลการประชุม)\n"
+            "  2. **ประเด็นสาระสำคัญ:** (ข้อเท็จจริง สิ่งที่หารือ หรือผลการประชุม)\n"
             "  3. **จุดยืน/บทบาทพิเศษของไทย:** (ไทยชูคอนเซ็ปต์อะไร เช่น Bridge Builder, การสมัครสมาชิก UNHCR)\n\n"
             "OUTPUT 1 FORMAT:\n"
             "- **ผู้แทน & เวทีประชุม:** [สรุปผู้แทนและเวที]\n"
@@ -212,14 +212,15 @@ def analyze_headline(headline_title, is_mfa_source, is_thai_source):
         f"- If THAI, write purely in native Thai script. Abbreviate titles naturally."
     )
     
-    # แก้ไขชื่อโมเดลเป็นรุ่นเสถียรมาตรฐาน
-    models_to_try = ['gemini-1.5-flash', 'gemini-1.5-pro']
+    # โมเดลมาตรฐานหลักของ google-genai SDK
+    models_to_try = ['gemini-2.5-flash', 'gemini-2.0-flash-exp']
     for model_name in models_to_try:
         try:
             response = client.models.generate_content(model=model_name, contents=prompt)
-            if response and response.text:
+            if response and hasattr(response, 'text') and response.text:
                 return response.text
-        except Exception:
+        except Exception as err:
+            st.error(f"Error calling {model_name}: {err}")
             continue
             
     return "AI Analysis Error: Unable to summarize at this moment."
@@ -283,15 +284,18 @@ for item in source_items:
         if st.button("✨ สรุปเนื้อหาด้วย AI", key=f"sum_btn_{link}"):
             with st.spinner("Gemini กำลังวิเคราะห์ประเด็นข่าว..."):
                 raw_analysis = analyze_headline(title, is_mfa, is_thai)
-                screen_text, audio_script = split_analysis(raw_analysis)
                 
-                db[link]['analysis'] = {
-                    "screen_text": screen_text,
-                    "audio_script": audio_script,
-                    "audio_file": None
-                }
-                save_db(db)
-                st.rerun()
+                if "AI Analysis Error" not in raw_analysis:
+                    screen_text, audio_script = split_analysis(raw_analysis)
+                    db[link]['analysis'] = {
+                        "screen_text": screen_text,
+                        "audio_script": audio_script,
+                        "audio_file": None
+                    }
+                    save_db(db)
+                    st.rerun()
+                else:
+                    st.error(raw_analysis)
     else:
         screen_text = analysis_data.get("screen_text")
         audio_script = analysis_data.get("audio_script", "")
