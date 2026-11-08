@@ -10,7 +10,6 @@ import os
 import hashlib
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
-import google.generativeai as genai
 import base64
 
 # ---------------------------------------------------------
@@ -33,9 +32,6 @@ st.write("คลังข่าวสารและสรุปประเด�
 if not API_KEY:
     st.error("⚠️ ไม่พบ GEMINI_API_KEY กรุณาตั้งค่า Secrets ในหลังบ้าน Streamlit Cloud ก่อนใช้งาน")
     st.stop()
-
-# Configure stable SDK
-genai.configure(api_key=API_KEY)
 
 # ---------------------------------------------------------
 # Dual Storage Engine
@@ -197,7 +193,7 @@ def update_all_news():
     save_local_json(NEWS_DB_FILE, news_db)
 
 # ---------------------------------------------------------
-# Web Article Scraper & Gemini AI Summarizer (Debug Mode)
+# Web Article Scraper & Gemini REST API Summarizer (Direct HTTP)
 # ---------------------------------------------------------
 def scrape_full_article(url):
     try:
@@ -225,21 +221,30 @@ def generate_summary(title, description, full_text):
     3. 💡 ประเด็นวิเคราะห์สำหรับสอบ กต. (Key Takeaways for MFA Exam)
     """
     
-    models_to_try = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro']
-    errors_log = []
+    # ใช้ REST API ยิงตรงเข้าโมเดลรุ่นมาตรฐาน ปลอดภัยที่สุด ไม่แคร์ไลบรารี SDK
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={API_KEY}"
+    headers = {"Content-Type": "application/json"}
+    payload = {
+        "contents": [{
+            "parts": [{"text": prompt}]
+        }]
+    }
     
-    for m_name in models_to_try:
-        try:
-            model = genai.GenerativeModel(m_name)
-            response = model.generate_content(prompt)
-            if response and response.text:
-                return response.text
-        except Exception as e:
-            errors_log.append(f"{m_name}: {str(e)}")
-            continue
+    try:
+        res = requests.post(url, headers=headers, json=payload, timeout=15)
+        res_json = res.json()
+        
+        if res.status_code == 200:
+            candidate = res_json.get("candidates", [])[0]
+            text_result = candidate.get("content", {}).get("parts", [])[0].get("text", "")
+            return text_result
+        else:
+            error_msg = res_json.get("error", {}).get("message", "Unknown API error")
+            raise Exception(f"API HTTP {res.status_code}: {error_msg}")
             
-    st.error(f"❌ API Error Details: {' | '.join(errors_log)}")
-    st.stop()
+    except Exception as e:
+        st.error(f"❌ เกิดข้อผิดพลาดในการเชื่อมต่อกับ Gemini API: {str(e)}")
+        st.stop()
 
 # ---------------------------------------------------------
 # TTS Audio Generator
