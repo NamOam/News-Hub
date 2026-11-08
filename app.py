@@ -34,7 +34,7 @@ if not API_KEY:
     st.error("⚠️ ไม่พบ GEMINI_API_KEY กรุณาตั้งค่า Secrets ในหลังบ้าน Streamlit Cloud ก่อนใช้งาน")
     st.stop()
 
-# Configure old-school stable SDK
+# Configure stable SDK
 genai.configure(api_key=API_KEY)
 
 # ---------------------------------------------------------
@@ -197,7 +197,7 @@ def update_all_news():
     save_local_json(NEWS_DB_FILE, news_db)
 
 # ---------------------------------------------------------
-# Web Article Scraper & Gemini AI Summarizer (Stable SDK)
+# Web Article Scraper & Gemini AI Summarizer
 # ---------------------------------------------------------
 def scrape_full_article(url):
     try:
