@@ -11,11 +11,14 @@ import hashlib
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 from google import genai
+import base64
 
 # ---------------------------------------------------------
-# Secure API Key Configuration
+# Secure API Key & GitHub Config
 # ---------------------------------------------------------
 API_KEY = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
+GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN", os.environ.get("GITHUB_TOKEN", ""))
+GITHUB_REPO = st.secrets.get("GITHUB_REPO", os.environ.get("GITHUB_REPO", "")) # รูปแบบ "username/repo"
 
 DB_FILE = "news_db.json"
 AUDIO_DIR = "audio_cache"
@@ -24,7 +27,7 @@ os.makedirs(AUDIO_DIR, exist_ok=True)
 
 st.set_page_config(page_title="My Diplomat News Hub", layout="wide")
 st.title("My Diplomat News Hub")
-st.write("คลังข่าวสารและสรุปประเด็นสำคัญ (เตรียมสอบ กต. - โหลดเร็ว อัปเดตอัตโนมัติ)")
+st.write("คลังข่าวสารและสรุปประเด็นสำคัญ (เตรียมสอบ กต. - โหลดเร็ว ซิงค์อัตโนมัติ)")
 
 if not API_KEY:
     st.error("⚠️ ไม่พบ GEMINI_API_KEY กรุณาตั้งค่า Secrets ในหลังบ้าน Streamlit Cloud ก่อนใช้งาน")
@@ -35,16 +38,27 @@ def get_gemini_client(key):
     return genai.Client(api_key=key)
 
 # ---------------------------------------------------------
-# Local JSON Database Engine
+# GitHub Sync Storage Engine
 # ---------------------------------------------------------
 def load_db():
-    if not os.path.exists(DB_FILE):
-        return {}
-    try:
-        with open(DB_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
+    if GITHUB_TOKEN and GITHUB_REPO:
+        try:
+            url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{DB_FILE}"
+            headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+            res = requests.get(url, headers=headers, timeout=5)
+            if res.status_code == 200:
+                content_json = json.loads(base64.b64decode(res.json()['content']).decode('utf-8'))
+                return content_json
+        except Exception:
+            pass
+            
+    if os.path.exists(DB_FILE):
+        try:
+            with open(DB_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
 
 def save_db(data):
     cutoff_date = datetime.now() - timedelta(days=10)
@@ -62,19 +76,45 @@ def save_db(data):
         except Exception:
             filtered_db[link] = item
             
+    # บันทึกลง Local ไว้ก่อน
     with open(DB_FILE, "w", encoding="utf-8") as f:
         json.dump(filtered_db, f, ensure_ascii=False, indent=2)
+        
+    # ซิงค์ขึ้น GitHub อัตโนมัติ (ถ้าตั้งค่า Token ไว้)
+    if GITHUB_TOKEN and GITHUB_REPO:
+        try:
+            url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{DB_FILE}"
+            headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+            
+            # เช็ค SHA ปัจจุบันของไฟล์บน Git
+            get_res = requests.get(url, headers=headers, timeout=5)
+            sha = get_res.json().get('sha') if get_res.status_code == 200 else None
+            
+            file_content_str = json.dumps(filtered_db, ensure_ascii=False, indent=2)
+            encoded_content = base64.b64encode(file_content_str.encode('utf-8')).decode('utf-8')
+            
+            payload = {
+                "message": "Auto-sync news database state [skip ci]",
+                "content": encoded_content,
+                "branch": "main"
+            }
+            if sha:
+                payload["sha"] = sha
+                
+            requests.put(url, headers=headers, json=payload, timeout=5)
+        except Exception:
+            pass
 
 db = load_db()
 
-# News Sources
+# News Sources (ย้าย MFA ไปไว้ท้ายสุดตามต้องการ)
 rss_sources = {
-    "🇹🇭 MFA - สรุปแถลงข่าวประจำสัปดาห์": "https://www.mfa.go.th/th/content-category/%E0%B8%AA%E0%B8%A3%E0%B8%B8%E0%B8%9B%E0%B9%81%E0%B8%96%E0%B8%A5%E0%B8%87%E0%B8%82%E0%B9%88%E0%B8%B2%E0%B8%A7%E0%B8%9B%E0%B8%A3%E0%B8%B0%E0%B8%88%E0%B8%B3%E0%B8%AA%E0%B8%B1%E0%B8%9B%E0%B8%94%E0%B8%B2%E0%B8%AB%E0%B9%8C",
-    "🇹🇭 MFA - ข่าวสารนิเทศ / ข่าวเด่น": "https://www.mfa.go.th/th/content-category/%E0%B8%82%E0%B9%88%E0%B8%B2%E0%B8%AA%E0%B8%B2%E0%B8%A3%E0%B8%B8%E0%B8%9B%E0%B9%81%E0%B8%96%E0%B8%A5%E0%B8%87%E0%B8%82%E0%B9%88%E0%B8%B2%E0%B8%A7%E0%B8%9B%E0%B8%A3%E0%B8%B0%E0%B8%88%E0%B8%B3%E0%B8%AA%E0%B8%B1%E0%B8%9B%E0%B8%94%E0%B8%B2%E0%B8%AB%E0%B9%8C",
     "BBC Thai (ข่าวบีบีซีไทย)": "https://news.google.com/rss/search?q=site:bbc.com/thai&hl=th&gl=TH&ceid=TH:th",
     "Thailand News (Thai PBS)": "https://news.google.com/rss/search?q=site:thaipbs.or.th&hl=th&gl=TH&ceid=TH:th",
     "ASEAN / Asia News (CNA)": "https://www.channelnewsasia.com/api/v1/rss-outbound-feed?_format=xml&category=6511",
-    "World News (BBC)": "http://feeds.bbci.co.uk/news/world/rss.xml"
+    "World News (BBC)": "http://feeds.bbci.co.uk/news/world/rss.xml",
+    "🇹🇭 MFA - สรุปแถลงข่าวประจำสัปดาห์": "https://www.mfa.go.th/th/content-category/%E0%B8%AA%E0%B8%A3%E0%B8%B8%E0%B8%9B%E0%B9%81%E0%B8%96%E0%B8%A5%E0%B8%87%E0%B8%82%E0%B9%88%E0%B8%B2%E0%B8%A7%E0%B8%9B%E0%B8%A3%E0%B8%B0%E0%B8%88%E0%B8%B3%E0%B8%AA%E0%B8%B1%E0%B8%9B%E0%B8%94%E0%B8%B2%E0%B8%AB%E0%B9%8C",
+    "🇹🇭 MFA - ข่าวสารนิเทศ / ข่าวเด่น": "https://www.mfa.go.th/th/content-category/%E0%B8%82%E0%B9%88%E0%B8%B2%E0%B8%AA%E0%B8%B2%E0%B8%A3%E0%B8%B8%E0%B8%9B%E0%B9%81%E0%B8%96%E0%B8%A5%E0%B8%87%E0%B8%82%E0%B9%88%E0%B8%B2%E0%B8%A7%E0%B8%9B%E0%B8%A3%E0%B8%B0%E0%B8%88%E0%B8%B3%E0%B8%AA%E0%B8%B1%E0%B8%9B%E0%B8%94%E0%B8%B2%E0%B8%AB%E0%B8%9C%E0%B9%8C"
 }
 
 # ---------------------------------------------------------
@@ -88,26 +128,27 @@ keyword_filter = st.sidebar.text_input("ค้นหาด้วยคีย์�
 selected_url = rss_sources[selected_source]
 
 # ---------------------------------------------------------
-# Fast Scrapers with Strict Timeouts
+# Fast Scrapers (ปรับปรุง Scraper ให้ดึงข่าว MFA แม่นยำขึ้น)
 # ---------------------------------------------------------
 def scrape_mfa_news(url):
     headers = {"User-Agent": "Mozilla/5.0"}
     ignored_keywords = ["ประวัติ", "โครงสร้าง", "นโยบาย", "ภารกิจ", "อำนาจหน้าที่", "ผู้บริหาร", "ติดต่อ", "คำถามที่พบบ่อย"]
     try:
-        response = requests.get(url, headers=headers, timeout=3)
+        response = requests.get(url, headers=headers, timeout=4)
         response.encoding = 'utf-8'
         soup = BeautifulSoup(response.text, 'html.parser')
         articles = []
+        
+        # ค้นหาลิงก์บทความเนื้อหาจากโครงสร้างหน้าเว็บ MFA
         for card in soup.find_all('a', href=True):
             href = card['href']
-            if '/content/' in href:
-                title = card.get_text(strip=True)
-                if title and len(title) > 12:
-                    if not any(bad_word in title for bad_word in ignored_keywords):
-                        full_link = f"https://www.mfa.go.th{href}" if href.startswith('/') else href
-                        if not any(a['link'] == full_link for a in articles):
-                            articles.append({"title": title, "link": full_link})
-            if len(articles) >= 8:
+            title = card.get_text(strip=True)
+            if '/content/' in href and title and len(title) > 10:
+                if not any(bad_word in title for bad_word in ignored_keywords):
+                    full_link = f"https://www.mfa.go.th{href}" if href.startswith('/') else href
+                    if not any(a['link'] == full_link for a in articles):
+                        articles.append({"title": title, "link": full_link})
+            if len(articles) >= 10:
                 break
         return articles
     except Exception:
@@ -116,7 +157,7 @@ def scrape_mfa_news(url):
 def parse_rss_feed(url):
     try:
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        xml_data = urllib.request.urlopen(req, timeout=3).read()
+        xml_data = urllib.request.urlopen(req, timeout=4).read()
         root = ET.fromstring(xml_data)
         articles = []
         audio_video_keywords = ["audio", "video", "listen:", "podcast", "ฟัง:", "คลิป"]
@@ -129,7 +170,7 @@ def parse_rss_feed(url):
                 continue
                 
             articles.append({"title": title, "link": link})
-            if len(articles) >= 8:
+            if len(articles) >= 10:
                 break
         return articles
     except Exception:
@@ -161,7 +202,7 @@ except Exception:
     pass
 
 # ---------------------------------------------------------
-# Gemini Summarizer Engine (อัปเดตเป็น gemini-3.8-flash และ 3.6-flash)
+# Gemini Summarizer Engine (ใช้ gemini-3.8-flash)
 # ---------------------------------------------------------
 def analyze_headline(headline_title, is_mfa_source, is_thai_source):
     client = get_gemini_client(API_KEY)
@@ -212,8 +253,7 @@ def analyze_headline(headline_title, is_mfa_source, is_thai_source):
         f"- If THAI, write purely in native Thai script. Abbreviate titles naturally."
     )
     
-    # ใช้ชื่อรุ่น Gemini ล่าสุด
-    models_to_try = ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.5-flash-lite']
+    models_to_try = ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-2.5-flash']
     for model_name in models_to_try:
         try:
             response = client.models.generate_content(model=model_name, contents=prompt)
@@ -278,8 +318,6 @@ for item in source_items:
             st.rerun()
 
     analysis_data = item.get("analysis")
-    
-    # เช็คว่ามีข้อมูลสรุป หรือเป็นข้อความ Error เก่าค้างอยู่หรือไม่
     has_valid_analysis = analysis_data and isinstance(analysis_data, dict) and "screen_text" in analysis_data and "AI Analysis Error" not in str(analysis_data.get("screen_text"))
 
     if not has_valid_analysis:
