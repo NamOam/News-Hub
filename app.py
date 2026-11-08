@@ -266,9 +266,9 @@ if selected_source != "ทุกแหล่งข่าว":
     all_items = [i for i in all_items if i.get('source') == selected_source]
 
 if filter_status == "ยังไม่ได้อ่าน":
-    all_items = [i for i in all_items if not user_status.get(i['id'], {}).get('read', False)]
+    all_items = [i for i in all_items if not user_status.get(i.get('id', hashlib.md5(i.get('link', '').encode('utf-8')).hexdigest()), {}).get('read', False)]
 elif filter_status == "อ่านแล้ว":
-    all_items = [i for i in all_items if user_status.get(i['id'], {}).get('read', False)]
+    all_items = [i for i in all_items if user_status.get(i.get('id', hashlib.md5(i.get('link', '').encode('utf-8')).hexdigest()), {}).get('read', False)]
 
 st.subheader(f"📰 รายการข่าว ({len(all_items)} ข่าว)")
 
@@ -276,16 +276,17 @@ if not all_items:
     st.info("ไม่มีรายการข่าวที่จะแสดง สามารถกดปุ่ม '🔄 ดึงข่าวใหม่สดๆ' ด้านข้างได้เลยครับ")
 
 for item in all_items:
-    item_id = item['id']
+    # Safe ID fallback preventing KeyError
+    item_id = item.get('id') or hashlib.md5((item.get('link') or item.get('title', '')).encode('utf-8')).hexdigest()
     st_item = user_status.get(item_id, {})
     is_read = st_item.get('read', False)
     summary_text = st_item.get('summary', "")
 
     read_badge = "✅ [อ่านแล้ว]" if is_read else "🆕 [ยังไม่อ่าน]"
     
-    with st.expander(f"{read_badge} {item['title']} - ({item.get('source', '')})"):
+    with st.expander(f"{read_badge} {item.get('title', 'ไม่มีหัวข้อ')} - ({item.get('source', '')})"):
         st.write(f"**วันที่:** {item.get('pub_date', '')}")
-        st.write(f"**ลิงก์ต้นทาง:** [{item['link']}]({item['link']})")
+        st.write(f"**ลิงก์ต้นทาง:** [{item.get('link', '')}]({item.get('link', '')})")
         st.write(f"**รายละเอียดสังเขป:** {item.get('description', '')}")
 
         col1, col2 = st.columns([1, 1])
@@ -307,8 +308,8 @@ for item in all_items:
         with col2:
             if st.button("✨ สรุปเนื้อหาด้วย AI (Gemini)", key=f"sum_{item_id}"):
                 with st.spinner("AI กำลังวิเคราะห์ข่าวและสรุปประเด็นสำหรับสอบ กต. ..."):
-                    full_text = scrape_full_article(item['link'])
-                    summary_result = generate_summary(item['title'], item.get('description', ''), full_text)
+                    full_text = scrape_full_article(item.get('link', ''))
+                    summary_result = generate_summary(item.get('title', ''), item.get('description', ''), full_text)
                     if item_id not in user_status:
                         user_status[item_id] = {}
                     user_status[item_id]['summary'] = summary_result
