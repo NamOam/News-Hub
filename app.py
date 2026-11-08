@@ -197,7 +197,7 @@ def update_all_news():
     save_local_json(NEWS_DB_FILE, news_db)
 
 # ---------------------------------------------------------
-# Web Article Scraper & Gemini AI Summarizer
+# Web Article Scraper & Gemini AI Summarizer (Auto-Fallback)
 # ---------------------------------------------------------
 def scrape_full_article(url):
     try:
@@ -211,7 +211,6 @@ def scrape_full_article(url):
         return ""
 
 def generate_summary(title, description, full_text):
-    model = genai.GenerativeModel('gemini-1.5-flash')
     content_to_analyze = full_text if len(full_text) > 200 else f"{title}\n{description}"
     prompt = f"""
     คุณคือผู้เชี่ยวชาญด้านการต่างประเทศและการวิเคราะห์ข่าวกรอง (Diplomatic Intelligence Analyst)
@@ -225,8 +224,21 @@ def generate_summary(title, description, full_text):
     2. 🌐 บริบททางการเมือง/การต่างประเทศ/เศรษฐกิจ (Diplomatic & Strategic Context)
     3. 💡 ประเด็นวิเคราะห์สำหรับสอบ กต. (Key Takeaways for MFA Exam)
     """
-    response = model.generate_content(prompt)
-    return response.text
+    
+    models_to_try = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro']
+    last_error = None
+    
+    for m_name in models_to_try:
+        try:
+            model = genai.GenerativeModel(m_name)
+            response = model.generate_content(prompt)
+            if response and response.text:
+                return response.text
+        except Exception as e:
+            last_error = e
+            continue
+            
+    raise Exception(f"ไม่สามารถเรียกใช้งาน AI ได้ (Error: {str(last_error)})")
 
 # ---------------------------------------------------------
 # TTS Audio Generator
