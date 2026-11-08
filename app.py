@@ -227,7 +227,7 @@ def generate_summary(title, description, full_text):
     3. 💡 ประเด็นวิเคราะห์สำหรับสอบ กต. (Key Takeaways for MFA Exam)
     """
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model="gemini-1.5-flash",
         contents=prompt
     )
     return response.text
@@ -276,7 +276,6 @@ if not all_items:
     st.info("ไม่มีรายการข่าวที่จะแสดง สามารถกดปุ่ม '🔄 ดึงข่าวใหม่สดๆ' ด้านข้างได้เลยครับ")
 
 for item in all_items:
-    # Safe ID fallback preventing KeyError
     item_id = item.get('id') or hashlib.md5((item.get('link') or item.get('title', '')).encode('utf-8')).hexdigest()
     st_item = user_status.get(item_id, {})
     is_read = st_item.get('read', False)
