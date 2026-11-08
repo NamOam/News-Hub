@@ -197,7 +197,7 @@ def update_all_news():
     save_local_json(NEWS_DB_FILE, news_db)
 
 # ---------------------------------------------------------
-# Web Article Scraper & Gemini AI Summarizer (Auto-Fallback)
+# Web Article Scraper & Gemini AI Summarizer (Debug Mode)
 # ---------------------------------------------------------
 def scrape_full_article(url):
     try:
@@ -226,7 +226,7 @@ def generate_summary(title, description, full_text):
     """
     
     models_to_try = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro']
-    last_error = None
+    errors_log = []
     
     for m_name in models_to_try:
         try:
@@ -235,10 +235,11 @@ def generate_summary(title, description, full_text):
             if response and response.text:
                 return response.text
         except Exception as e:
-            last_error = e
+            errors_log.append(f"{m_name}: {str(e)}")
             continue
             
-    raise Exception(f"ไม่สามารถเรียกใช้งาน AI ได้ (Error: {str(last_error)})")
+    st.error(f"❌ API Error Details: {' | '.join(errors_log)}")
+    st.stop()
 
 # ---------------------------------------------------------
 # TTS Audio Generator
