@@ -10,7 +10,7 @@ import os
 import hashlib
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
-from google import genai
+import google.generativeai as genai
 import base64
 
 # ---------------------------------------------------------
@@ -34,9 +34,8 @@ if not API_KEY:
     st.error("⚠️ ไม่พบ GEMINI_API_KEY กรุณาตั้งค่า Secrets ในหลังบ้าน Streamlit Cloud ก่อนใช้งาน")
     st.stop()
 
-@st.cache_resource
-def get_gemini_client(key):
-    return genai.Client(api_key=key)
+# Configure old-school stable SDK
+genai.configure(api_key=API_KEY)
 
 # ---------------------------------------------------------
 # Dual Storage Engine
@@ -198,7 +197,7 @@ def update_all_news():
     save_local_json(NEWS_DB_FILE, news_db)
 
 # ---------------------------------------------------------
-# Web Article Scraper & Gemini AI Summarizer
+# Web Article Scraper & Gemini AI Summarizer (Stable SDK)
 # ---------------------------------------------------------
 def scrape_full_article(url):
     try:
@@ -212,7 +211,7 @@ def scrape_full_article(url):
         return ""
 
 def generate_summary(title, description, full_text):
-    client = get_gemini_client(API_KEY)
+    model = genai.GenerativeModel('gemini-1.5-flash')
     content_to_analyze = full_text if len(full_text) > 200 else f"{title}\n{description}"
     prompt = f"""
     คุณคือผู้เชี่ยวชาญด้านการต่างประเทศและการวิเคราะห์ข่าวกรอง (Diplomatic Intelligence Analyst)
@@ -226,10 +225,7 @@ def generate_summary(title, description, full_text):
     2. 🌐 บริบททางการเมือง/การต่างประเทศ/เศรษฐกิจ (Diplomatic & Strategic Context)
     3. 💡 ประเด็นวิเคราะห์สำหรับสอบ กต. (Key Takeaways for MFA Exam)
     """
-    response = client.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=prompt
-    )
+    response = model.generate_content(prompt)
     return response.text
 
 # ---------------------------------------------------------
