@@ -18,16 +18,17 @@ import base64
 # ---------------------------------------------------------
 API_KEY = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
 GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN", os.environ.get("GITHUB_TOKEN", ""))
-GITHUB_REPO = st.secrets.get("GITHUB_REPO", os.environ.get("GITHUB_REPO", "")) # รูปแบบ "username/repo"
+GITHUB_REPO = st.secrets.get("GITHUB_REPO", os.environ.get("GITHUB_REPO", ""))
 
-DB_FILE = "news_db.json"
+NEWS_DB_FILE = "news_db.json"
+USER_STATUS_FILE = "read_status.json"
 AUDIO_DIR = "audio_cache"
 
 os.makedirs(AUDIO_DIR, exist_ok=True)
 
 st.set_page_config(page_title="My Diplomat News Hub", layout="wide")
 st.title("My Diplomat News Hub")
-st.write("คลังข่าวสารและสรุปประเด็นสำคัญ (เตรียมสอบ กต. - โหลดเร็ว ซิงค์อัตโนมัติ)")
+st.write("คลังข่าวสารและสรุปประเด็นสำคัญ (เตรียมสอบ กต. - ระบบแยกสมุดจดสถานะ ซิงค์ถาวร)")
 
 if not API_KEY:
     st.error("⚠️ ไม่พบ GEMINI_API_KEY กรุณาตั้งค่า Secrets ในหลังบ้าน Streamlit Cloud ก่อนใช้งาน")
@@ -38,83 +39,75 @@ def get_gemini_client(key):
     return genai.Client(api_key=key)
 
 # ---------------------------------------------------------
-# GitHub Sync Storage Engine
+# Dual Storage Engine: 
+# 1) news_db.json (Local temporary news items)
+# 2) read_status.json (Personal status & summaries synced to GitHub)
 # ---------------------------------------------------------
-def load_db():
-    if GITHUB_TOKEN and GITHUB_REPO:
+def load_json_file(filename):
+    if os.path.exists(filename):
         try:
-            url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{DB_FILE}"
-            headers = {"Authorization": f"token {GITHUB_TOKEN}"}
-            res = requests.get(url, headers=headers, timeout=5)
-            if res.status_code == 200:
-                content_json = json.loads(base64.b64decode(res.json()['content']).decode('utf-8'))
-                return content_json
-        except Exception:
-            pass
-            
-    if os.path.exists(DB_FILE):
-        try:
-            with open(DB_FILE, "r", encoding="utf-8") as f:
+            with open(filename, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
             return {}
     return {}
 
-def save_db(data):
-    cutoff_date = datetime.now() - timedelta(days=10)
-    filtered_db = {}
-    for link, item in data.items():
-        try:
-            item_date = datetime.strptime(item.get("added_date", datetime.now().strftime("%Y-%m-%d")), "%Y-%m-%d")
-            if item_date >= cutoff_date:
-                filtered_db[link] = item
-            else:
-                analysis_info = item.get("analysis") or {}
-                audio_file = analysis_info.get("audio_file")
-                if audio_file and os.path.exists(audio_file):
-                    os.remove(audio_file)
-        except Exception:
-            filtered_db[link] = item
-            
-    # บันทึกลง Local ไว้ก่อน
-    with open(DB_FILE, "w", encoding="utf-8") as f:
-        json.dump(filtered_db, f, ensure_ascii=False, indent=2)
-        
-    # ซิงค์ขึ้น GitHub อัตโนมัติ (ถ้าตั้งค่า Token ไว้)
+def save_local_json(filename, data):
+    with open(filename, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def load_user_status():
+    # ดึงสมุดจดสถานะจาก GitHub เป็นหลักเพื่อความแม่นยำสูงสุด
     if GITHUB_TOKEN and GITHUB_REPO:
         try:
-            url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{DB_FILE}"
+            url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{USER_STATUS_FILE}"
+            headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+            res = requests.get(url, headers=headers, timeout=3)
+            if res.status_code == 200:
+                content_json = json.loads(base64.b64decode(res.json()['content']).decode('utf-8'))
+                save_local_json(USER_STATUS_FILE, content_json)
+                return content_json
+        except Exception:
+            pass
+    return load_json_file(USER_STATUS_FILE)
+
+def sync_user_status_to_github(data):
+    save_local_json(USER_STATUS_FILE, data)
+    
+    if GITHUB_TOKEN and GITHUB_REPO:
+        try:
+            url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{USER_STATUS_FILE}"
             headers = {"Authorization": f"token {GITHUB_TOKEN}"}
             
-            # เช็ค SHA ปัจจุบันของไฟล์บน Git
-            get_res = requests.get(url, headers=headers, timeout=5)
+            get_res = requests.get(url, headers=headers, timeout=3)
             sha = get_res.json().get('sha') if get_res.status_code == 200 else None
             
-            file_content_str = json.dumps(filtered_db, ensure_ascii=False, indent=2)
+            file_content_str = json.dumps(data, ensure_ascii=False, indent=2)
             encoded_content = base64.b64encode(file_content_str.encode('utf-8')).decode('utf-8')
             
             payload = {
-                "message": "Auto-sync news database state [skip ci]",
+                "message": "Auto-sync user read status [skip ci]",
                 "content": encoded_content,
                 "branch": "main"
             }
             if sha:
                 payload["sha"] = sha
                 
-            requests.put(url, headers=headers, json=payload, timeout=5)
+            requests.put(url, headers=headers, json=payload, timeout=3)
         except Exception:
             pass
 
-db = load_db()
+news_db = load_json_file(NEWS_DB_FILE)
+user_status = load_user_status()
 
-# News Sources (ย้าย MFA ไปไว้ท้ายสุดตามต้องการ)
+# News Sources
 rss_sources = {
     "BBC Thai (ข่าวบีบีซีไทย)": "https://news.google.com/rss/search?q=site:bbc.com/thai&hl=th&gl=TH&ceid=TH:th",
     "Thailand News (Thai PBS)": "https://news.google.com/rss/search?q=site:thaipbs.or.th&hl=th&gl=TH&ceid=TH:th",
     "ASEAN / Asia News (CNA)": "https://www.channelnewsasia.com/api/v1/rss-outbound-feed?_format=xml&category=6511",
     "World News (BBC)": "http://feeds.bbci.co.uk/news/world/rss.xml",
     "🇹🇭 MFA - สรุปแถลงข่าวประจำสัปดาห์": "https://www.mfa.go.th/th/content-category/%E0%B8%AA%E0%B8%A3%E0%B8%B8%E0%B8%9B%E0%B9%81%E0%B8%96%E0%B8%A5%E0%B8%87%E0%B8%82%E0%B9%88%E0%B8%B2%E0%B8%A7%E0%B8%9B%E0%B8%A3%E0%B8%B0%E0%B8%88%E0%B8%B3%E0%B8%AA%E0%B8%B1%E0%B8%9B%E0%B8%94%E0%B8%B2%E0%B8%AB%E0%B9%8C",
-    "🇹🇭 MFA - ข่าวสารนิเทศ / ข่าวเด่น": "https://www.mfa.go.th/th/content-category/%E0%B8%82%E0%B9%88%E0%B8%B2%E0%B8%AA%E0%B8%B2%E0%B8%A3%E0%B8%B8%E0%B8%9B%E0%B9%81%E0%B8%96%E0%B8%A5%E0%B8%87%E0%B8%82%E0%B9%88%E0%B8%B2%E0%B8%A7%E0%B8%9B%E0%B8%A3%E0%B8%B0%E0%B8%88%E0%B8%B3%E0%B8%AA%E0%B8%B1%E0%B8%9B%E0%B8%94%E0%B8%B2%E0%B8%AB%E0%B8%9C%E0%B9%8C"
+    "🇹🇭 MFA - ข่าวสารนิเทศ / ข่าวเด่น": "https://www.mfa.go.th/th/content-category/%E0%B8%82%E0%B9%88%E0%B8%B2%E0%B8%AA%E0%B8%B2%E0%B8%A3%E0%B8%B8%E0%B8%9B%E0%B9%81%E0%B8%96%E0%B8%A5%E0%B8%87%E0%B8%82%E0%B9%88%E0%B8%B2%E0%B8%A7%E0%B8%9B%E0%B8%A3%E0%B8%B0%E0%B8%88%E0%B8%B3%E0%B8%AA%E0%B8%B1%E0%B8%9B%E0%B8%94%E0%B8%B2%E0%B8%AB%E0%B9%8C"
 }
 
 # ---------------------------------------------------------
@@ -128,18 +121,16 @@ keyword_filter = st.sidebar.text_input("ค้นหาด้วยคีย์�
 selected_url = rss_sources[selected_source]
 
 # ---------------------------------------------------------
-# Fast Scrapers (ปรับปรุง Scraper ให้ดึงข่าว MFA แม่นยำขึ้น)
+# Scrapers
 # ---------------------------------------------------------
 def scrape_mfa_news(url):
     headers = {"User-Agent": "Mozilla/5.0"}
     ignored_keywords = ["ประวัติ", "โครงสร้าง", "นโยบาย", "ภารกิจ", "อำนาจหน้าที่", "ผู้บริหาร", "ติดต่อ", "คำถามที่พบบ่อย"]
     try:
-        response = requests.get(url, headers=headers, timeout=4)
+        response = requests.get(url, headers=headers, timeout=3)
         response.encoding = 'utf-8'
         soup = BeautifulSoup(response.text, 'html.parser')
         articles = []
-        
-        # ค้นหาลิงก์บทความเนื้อหาจากโครงสร้างหน้าเว็บ MFA
         for card in soup.find_all('a', href=True):
             href = card['href']
             title = card.get_text(strip=True)
@@ -148,7 +139,7 @@ def scrape_mfa_news(url):
                     full_link = f"https://www.mfa.go.th{href}" if href.startswith('/') else href
                     if not any(a['link'] == full_link for a in articles):
                         articles.append({"title": title, "link": full_link})
-            if len(articles) >= 10:
+            if len(articles) >= 8:
                 break
         return articles
     except Exception:
@@ -157,7 +148,7 @@ def scrape_mfa_news(url):
 def parse_rss_feed(url):
     try:
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        xml_data = urllib.request.urlopen(req, timeout=4).read()
+        xml_data = urllib.request.urlopen(req, timeout=3).read()
         root = ET.fromstring(xml_data)
         articles = []
         audio_video_keywords = ["audio", "video", "listen:", "podcast", "ฟัง:", "คลิป"]
@@ -170,13 +161,13 @@ def parse_rss_feed(url):
                 continue
                 
             articles.append({"title": title, "link": link})
-            if len(articles) >= 10:
+            if len(articles) >= 8:
                 break
         return articles
     except Exception:
         return []
 
-# AUTO-FETCH ENGINE
+# Fetch news silently into local news_db
 try:
     is_mfa_src = "MFA" in selected_source
     fresh_articles = scrape_mfa_news(selected_url) if is_mfa_src else parse_rss_feed(selected_url)
@@ -186,23 +177,21 @@ try:
     for art in fresh_articles:
         link = art['link']
         title = art['title']
-        if link not in db:
+        if link not in news_db:
             db_updated = True
-            db[link] = {
+            news_db[link] = {
                 "title": title,
                 "link": link,
                 "source": selected_source,
-                "added_date": today_str,
-                "is_read": False,
-                "analysis": None
+                "added_date": today_str
             }
     if db_updated:
-        save_db(db)
+        save_local_json(NEWS_DB_FILE, news_db)
 except Exception:
     pass
 
 # ---------------------------------------------------------
-# Gemini Summarizer Engine (ใช้ gemini-3.8-flash)
+# Gemini Summarizer Engine
 # ---------------------------------------------------------
 def analyze_headline(headline_title, is_mfa_source, is_thai_source):
     client = get_gemini_client(API_KEY)
@@ -282,15 +271,19 @@ st.header(f"📰 ข่าวสาร: {selected_source}")
 is_mfa = "MFA" in selected_source
 is_thai = is_mfa or ("Thai" in selected_source)
 
-# Filter DB items
-source_items = [item for item in db.values() if item.get("source") == selected_source]
+# Filter items by selected source
+source_items = [item for item in news_db.values() if item.get("source") == selected_source]
 source_items.sort(key=lambda x: x.get("added_date", ""), reverse=True)
 
 displayed_count = 0
 for item in source_items:
     title = item['title']
     link = item['link']
-    is_read = item.get('is_read', False)
+    
+    # Read user status from separate status dictionary
+    status_entry = user_status.get(link, {})
+    is_read = status_entry.get('is_read', False)
+    analysis_data = status_entry.get('analysis', None)
     
     if read_filter == "ยังไม่ได้อ่านเท่านั้น" and is_read:
         continue
@@ -313,27 +306,30 @@ for item in source_items:
     with col_btn:
         btn_label = "Mark Unread" if is_read else "✓ อ่านแล้ว"
         if st.button(btn_label, key=f"read_btn_{link}"):
-            db[link]['is_read'] = not is_read
-            save_db(db)
+            if link not in user_status:
+                user_status[link] = {}
+            user_status[link]['is_read'] = not is_read
+            user_status[link]['updated_at'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            sync_user_status_to_github(user_status)
             st.rerun()
 
-    analysis_data = item.get("analysis")
-    has_valid_analysis = analysis_data and isinstance(analysis_data, dict) and "screen_text" in analysis_data and "AI Analysis Error" not in str(analysis_data.get("screen_text"))
+    has_valid_analysis = analysis_data and isinstance(analysis_data, dict) and "screen_text" in analysis_data
 
     if not has_valid_analysis:
-        btn_text = "🔄 ลองสรุปใหม่อีกครั้ง" if analysis_data else "✨ สรุปเนื้อหาด้วย AI"
-        if st.button(btn_text, key=f"sum_btn_{link}"):
+        if st.button("✨ สรุปเนื้อหาด้วย AI", key=f"sum_btn_{link}"):
             with st.spinner("Gemini กำลังวิเคราะห์ประเด็นข่าว..."):
                 raw_analysis = analyze_headline(title, is_mfa, is_thai)
                 
                 if raw_analysis:
                     screen_text, audio_script = split_analysis(raw_analysis)
-                    db[link]['analysis'] = {
+                    if link not in user_status:
+                        user_status[link] = {}
+                    user_status[link]['analysis'] = {
                         "screen_text": screen_text,
-                        "audio_script": audio_script,
-                        "audio_file": None
+                        "audio_script": audio_script
                     }
-                    save_db(db)
+                    user_status[link]['is_read'] = True  # Auto mark as read upon AI summary
+                    sync_user_status_to_github(user_status)
                     st.rerun()
                 else:
                     st.error("ไม่สามารถเรียก Gemini API ได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง")
