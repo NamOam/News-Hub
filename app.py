@@ -18,7 +18,7 @@ import base64
 # ---------------------------------------------------------
 API_KEY = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
 GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN", os.environ.get("GITHUB_TOKEN", ""))
-GITHUB_REPO = st.secrets.get("GITHUB_REPO", os.environ.get("GITHUB_REPO", ""))
+GITHUB_REPO = st.secrets.get("GITHUB_REPO", "NamOam/News-Hub")
 
 NEWS_DB_FILE = "news_db.json"
 USER_STATUS_FILE = "read_status.json"
@@ -39,9 +39,7 @@ def get_gemini_client(key):
     return genai.Client(api_key=key)
 
 # ---------------------------------------------------------
-# Dual Storage Engine: 
-# 1) news_db.json (Local temporary news items)
-# 2) read_status.json (Personal status & summaries synced to GitHub)
+# Dual Storage Engine
 # ---------------------------------------------------------
 def load_json_file(filename):
     if os.path.exists(filename):
@@ -57,7 +55,6 @@ def save_local_json(filename, data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 def load_user_status():
-    # ดึงสมุดจดสถานะจาก GitHub เป็นหลักเพื่อความแม่นยำสูงสุด
     if GITHUB_TOKEN and GITHUB_REPO:
         try:
             url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{USER_STATUS_FILE}"
@@ -100,262 +97,231 @@ def sync_user_status_to_github(data):
 news_db = load_json_file(NEWS_DB_FILE)
 user_status = load_user_status()
 
-# News Sources
+# ---------------------------------------------------------
+# RSS & MFA Scrapers
+# ---------------------------------------------------------
 rss_sources = {
     "BBC Thai (ข่าวบีบีซีไทย)": "https://news.google.com/rss/search?q=site:bbc.com/thai&hl=th&gl=TH&ceid=TH:th",
     "Thailand News (Thai PBS)": "https://news.google.com/rss/search?q=site:thaipbs.or.th&hl=th&gl=TH&ceid=TH:th",
     "ASEAN / Asia News (CNA)": "https://www.channelnewsasia.com/api/v1/rss-outbound-feed?_format=xml&category=6511",
     "World News (BBC)": "http://feeds.bbci.co.uk/news/world/rss.xml",
     "🇹🇭 MFA - สรุปแถลงข่าวประจำสัปดาห์": "https://www.mfa.go.th/th/content-category/%E0%B8%AA%E0%B8%A3%E0%B8%B8%E0%B8%9B%E0%B9%81%E0%B8%96%E0%B8%A5%E0%B8%87%E0%B8%82%E0%B9%88%E0%B8%B2%E0%B8%A7%E0%B8%9B%E0%B8%A3%E0%B8%B0%E0%B8%88%E0%B8%B3%E0%B8%AA%E0%B8%B1%E0%B8%9B%E0%B8%94%E0%B8%B2%E0%B8%AB%E0%B9%8C",
-    "🇹🇭 MFA - ข่าวสารนิเทศ / ข่าวเด่น": "https://www.mfa.go.th/th/content-category/%E0%B8%82%E0%B9%88%E0%B8%B2%E0%B8%AA%E0%B8%B2%E0%B8%A3%E0%B8%B8%E0%B8%9B%E0%B9%81%E0%B8%96%E0%B8%A5%E0%B8%87%E0%B8%82%E0%B9%88%E0%B8%B2%E0%B8%A7%E0%B8%9B%E0%B8%A3%E0%B8%B0%E0%B8%88%E0%B8%B3%E0%B8%AA%E0%B8%B1%E0%B8%9B%E0%B8%94%E0%B8%B2%E0%B8%AB%E0%B9%8C"
+    "🇹🇭 MFA - ข่าวสารนิเทศ / ข่าวเด่น": "https://www.mfa.go.th/th/content-category/%E0%B8%82%E0%B9%88%E0%B8%B2%E0%B8%AA%E0%B8%B2%E0%B8%A3%E0%B8%B8%E0%B8%9B%E0%B9%81%E0%B8%96%E0%B8%A5%E0%B8%87%E0%B8%82%E0%B9%88%E0%B8%B2%E0%B8%A7"
 }
 
-# ---------------------------------------------------------
-# Sidebar Controls
-# ---------------------------------------------------------
-st.sidebar.header("📌 ตัวกรองข่าว & ตั้งค่า")
-selected_source = st.sidebar.selectbox("เลือกแหล่งข่าว:", list(rss_sources.keys()))
-read_filter = st.sidebar.radio("สถานะการอ่าน:", ["ทั้งหมด", "ยังไม่ได้อ่านเท่านั้น", "อ่านแล้วเท่านั้น"])
-keyword_filter = st.sidebar.text_input("ค้นหาด้วยคีย์เวิร์ด:", "")
+def clean_html(raw_html):
+    if not raw_html:
+        return ""
+    cleantext = re.sub(re.compile('<.*?>'), '', raw_html)
+    return cleantext.strip()
 
-selected_url = rss_sources[selected_source]
-
-# ---------------------------------------------------------
-# Scrapers
-# ---------------------------------------------------------
-def scrape_mfa_news(url):
-    headers = {"User-Agent": "Mozilla/5.0"}
-    ignored_keywords = ["ประวัติ", "โครงสร้าง", "นโยบาย", "ภารกิจ", "อำนาจหน้าที่", "ผู้บริหาร", "ติดต่อ", "คำถามที่พบบ่อย"]
+def scrape_mfa_web(url, source_name):
+    items = []
     try:
-        response = requests.get(url, headers=headers, timeout=3)
-        response.encoding = 'utf-8'
-        soup = BeautifulSoup(response.text, 'html.parser')
-        articles = []
-        for card in soup.find_all('a', href=True):
-            href = card['href']
-            title = card.get_text(strip=True)
-            if '/content/' in href and title and len(title) > 10:
-                if not any(bad_word in title for bad_word in ignored_keywords):
-                    full_link = f"https://www.mfa.go.th{href}" if href.startswith('/') else href
-                    if not any(a['link'] == full_link for a in articles):
-                        articles.append({"title": title, "link": full_link})
-            if len(articles) >= 8:
-                break
-        return articles
-    except Exception:
-        return []
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        req = urllib.request.Request(url, headers=headers)
+        html = urllib.request.urlopen(req, timeout=8).read().decode('utf-8')
+        soup = BeautifulSoup(html, 'html.parser')
+        
+        cards = soup.find_all('div', class_=re.compile(r'content-card|article-card|news-card|card'))
+        if not cards:
+            cards = soup.find_all('a', href=re.compile(r'/th/content/'))
 
-def parse_rss_feed(url):
+        for card in cards[:15]:
+            title, link, pub_date = "", "", ""
+            if card.name == 'a':
+                link = card['href']
+                title = card.get_text(strip=True)
+            else:
+                a_tag = card.find('a', href=True)
+                if a_tag:
+                    link = a_tag['href']
+                    title = a_tag.get_text(strip=True)
+                title_tag = card.find(re.compile(r'h[1-6]'))
+                if title_tag:
+                    title = title_tag.get_text(strip=True)
+
+            if link and not link.startswith('http'):
+                link = "https://www.mfa.go.th" + link
+
+            date_tag = card.find(class_=re.compile(r'date|time'))
+            if date_tag:
+                pub_date = date_tag.get_text(strip=True)
+
+            if title and link:
+                item_id = hashlib.md5(link.encode('utf-8')).hexdigest()
+                items.append({
+                    "id": item_id,
+                    "title": title,
+                    "link": link,
+                    "pub_date": pub_date or "MFA Website",
+                    "description": title,
+                    "source": source_name
+                })
+    except Exception:
+        pass
+    return items
+
+def fetch_rss_feed(url, source_name):
+    if "mfa.go.th" in url:
+        return scrape_mfa_web(url, source_name)
+    items = []
     try:
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        xml_data = urllib.request.urlopen(req, timeout=3).read()
+        xml_data = urllib.request.urlopen(req, timeout=5).read()
         root = ET.fromstring(xml_data)
-        articles = []
-        audio_video_keywords = ["audio", "video", "listen:", "podcast", "ฟัง:", "คลิป"]
-        
-        for item in root.findall('./channel/item'):
+        for item in root.findall('.//item')[:15]:
             title = item.find('title').text if item.find('title') is not None else "No Title"
-            link = item.find('link').text if item.find('link') is not None else "#"
-            
-            if any(kw in title.lower() for kw in audio_video_keywords):
-                continue
-                
-            articles.append({"title": title, "link": link})
-            if len(articles) >= 8:
-                break
-        return articles
-    except Exception:
-        return []
-
-# Fetch news silently into local news_db
-try:
-    is_mfa_src = "MFA" in selected_source
-    fresh_articles = scrape_mfa_news(selected_url) if is_mfa_src else parse_rss_feed(selected_url)
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    
-    db_updated = False
-    for art in fresh_articles:
-        link = art['link']
-        title = art['title']
-        if link not in news_db:
-            db_updated = True
-            news_db[link] = {
+            link = item.find('link').text if item.find('link') is not None else ""
+            pub_date = item.find('pubDate').text if item.find('pubDate') is not None else ""
+            desc = item.find('description').text if item.find('description') is not None else ""
+            item_id = hashlib.md5(link.encode('utf-8')).hexdigest()
+            items.append({
+                "id": item_id,
                 "title": title,
                 "link": link,
-                "source": selected_source,
-                "added_date": today_str
-            }
-    if db_updated:
-        save_local_json(NEWS_DB_FILE, news_db)
-except Exception:
-    pass
+                "pub_date": pub_date,
+                "description": clean_html(desc),
+                "source": source_name
+            })
+    except Exception:
+        pass
+    return items
+
+def update_all_news():
+    all_new_items = {}
+    for name, url in rss_sources.items():
+        fetched = fetch_rss_feed(url, name)
+        for item in fetched:
+            all_new_items[item['id']] = item
+    news_db.update(all_new_items)
+    save_local_json(NEWS_DB_FILE, news_db)
 
 # ---------------------------------------------------------
-# Gemini Summarizer Engine
+# Web Article Scraper & Gemini AI Summarizer
 # ---------------------------------------------------------
-def analyze_headline(headline_title, is_mfa_source, is_thai_source):
+def scrape_full_article(url):
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        html = urllib.request.urlopen(req, timeout=6).read().decode('utf-8')
+        soup = BeautifulSoup(html, 'html.parser')
+        paragraphs = soup.find_all('p')
+        text = ' '.join([p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 30])
+        return text[:4000] if text else ""
+    except Exception:
+        return ""
+
+def generate_summary(title, description, full_text):
     client = get_gemini_client(API_KEY)
-    audio_lang = "NATURAL THAI LANGUAGE" if is_thai_source else "ENGLISH"
-
-    if is_mfa_source:
-        formatting_rules = (
-            "Language for OUTPUT 1: THAI ONLY.\n"
-            "CRITICAL MFA FORMATTING RULES:\n"
-            "- DO NOT put any relevance score.\n"
-            "- Shorten official titles immediately (e.g., 'รองนายกรัฐมนตรีและรัฐมนตรีว่าการกระทรวงการต่างประเทศ' -> 'รมว.กต.').\n"
-            "- Extract concrete diplomatic facts specifically answering:\n"
-            "  1. **ผู้แทน & เวทีประชุม:** (ใครเข้าร่วม ประชุมอะไร ครั้งที่เท่าไหร่)\n"
-            "  2. **ประเด็นสาระสำคัญ:** (ข้อเท็จจริง สิ่งที่หารือ หรือผลการประชุม)\n"
-            "  3. **จุดยืน/บทบาทพิเศษของไทย:** (ไทยชูคอนเซ็ปต์อะไร เช่น Bridge Builder, การสมัครสมาชิก UNHCR)\n\n"
-            "OUTPUT 1 FORMAT:\n"
-            "- **ผู้แทน & เวทีประชุม:** [สรุปผู้แทนและเวที]\n"
-            "- **ประเด็นสาระสำคัญ:** [ข้อเท็จจริง สาระการหารือ]\n"
-            "- **จุดยืน/บทบาทพิเศษของไทย:** [บทบาทและคอนเซ็ปต์ของไทย]"
-        )
-    elif is_thai_source:
-        formatting_rules = (
-            "Language for OUTPUT 1: THAI ONLY.\n"
-            "OUTPUT 1 FORMAT:\n"
-            "- **คะแนนความน่าสนใจออกสอบ (ภาค ก):** [1-10]\n"
-            "- **หมวดหมู่ข่าว:** [เช่น กีฬา, เศรษฐกิจ, สังคม, เหตุการณ์สำคัญ]\n"
-            "- **ประเด็นสำคัญ/สาระข่าว:** [สรุปเน้นข้อเท็จจริง ใคร ทำอะไร ที่ไหน ตัวเลข หรือเกร็ดความรู้]"
-        )
-    else:
-        formatting_rules = (
-            "Language for OUTPUT 1: ENGLISH ONLY.\n"
-            "OUTPUT 1 FORMAT:\n"
-            "- **General Knowledge Relevance:** [1-10]\n"
-            "- **Category:** [e.g., Regional Affairs, Global Economy]\n"
-            "- **Key Facts & Bulletins:** [State precise facts, dates, names, numbers, decisions.]"
-        )
-
-    prompt = (
-        f"You are an expert news editor and diplomatic briefing assistant.\n"
-        f"Analyze this headline: '{headline_title}'\n\n"
-        f"{formatting_rules}\n\n"
-        f"Generate two distinct outputs strictly separated by the marker '===AUDIO_SCRIPT===':\n\n"
-        f"OUTPUT 1 (ON-SCREEN TEXT):\n[Follow formatting rule strictly.]\n\n"
-        f"===AUDIO_SCRIPT===\n\n"
-        f"OUTPUT 2 (SPOKEN AUDIO SCRIPT):\n"
-        f"Write a clear, professional spoken briefing for headphone listening in {audio_lang}.\n"
-        f"- Do NOT read out metadata, section titles, or scores.\n"
-        f"- If THAI, write purely in native Thai script. Abbreviate titles naturally."
+    content_to_analyze = full_text if len(full_text) > 200 else f"{title}\n{description}"
+    prompt = f"""
+    คุณคือผู้เชี่ยวชาญด้านการต่างประเทศและการวิเคราะห์ข่าวกรอง (Diplomatic Intelligence Analyst)
+    โปรดสรุปข่าวต่อไปนี้เพื่อเตรียมสอบนักการทูต / กระทรวงการต่างประเทศ (มุ่งเน้นสาระสำคัญ นโยบายต่างประเทศ และผลกระทบเชิงยุทธศาสตร์):
+    
+    หัวข้อข่าว: {title}
+    เนื้อหาข่าว: {content_to_analyze}
+    
+    กรุณาสรุปเป็นภาษาไทย 3 หัวข้อหลัก ดังนี้:
+    1. 📌 สรุปสาระสำคัญ (Core Summary - ไม่เกิน 3 บรรทัด)
+    2. 🌐 บริบททางการเมือง/การต่างประเทศ/เศรษฐกิจ (Diplomatic & Strategic Context)
+    3. 💡 ประเด็นวิเคราะห์สำหรับสอบ กต. (Key Takeaways for MFA Exam)
+    """
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt
     )
-    
-    models_to_try = ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-2.5-flash']
-    for model_name in models_to_try:
-        try:
-            response = client.models.generate_content(model=model_name, contents=prompt)
-            if response and hasattr(response, 'text') and response.text:
-                return response.text
-        except Exception:
-            continue
-            
-    return None
-
-def split_analysis(full_text):
-    if "===AUDIO_SCRIPT===" in full_text:
-        parts = full_text.split("===AUDIO_SCRIPT===")
-        return parts[0].strip(), parts[1].strip()
-    return full_text, full_text
-
-async def generate_audio_file(text, output_path, voice_id):
-    communicate = edge_tts.Communicate(text, voice=voice_id)
-    await communicate.save(output_path)
+    return response.text
 
 # ---------------------------------------------------------
-# Main Display Flow
+# TTS Audio Generator
 # ---------------------------------------------------------
-st.header(f"📰 ข่าวสาร: {selected_source}")
+async def text_to_speech_async(text, output_file):
+    voice = "th-TH-NiwatNeural" if re.search(r'[\u0E00-\u0E7F]', text) else "en-US-ChristopherNeural"
+    communicate = edge_tts.Communicate(text, voice)
+    await communicate.save(output_file)
 
-is_mfa = "MFA" in selected_source
-is_thai = is_mfa or ("Thai" in selected_source)
+def get_audio_file(text, item_id):
+    clean_text_for_audio = re.sub(r'[*#_`]', '', text)
+    file_path = os.path.join(AUDIO_DIR, f"{item_id}.mp3")
+    if not os.path.exists(file_path):
+        asyncio.run(text_to_speech_async(clean_text_for_audio[:1000], file_path))
+    return file_path
 
-# Filter items by selected source
-source_items = [item for item in news_db.values() if item.get("source") == selected_source]
-source_items.sort(key=lambda x: x.get("added_date", ""), reverse=True)
+# ---------------------------------------------------------
+# Streamlit UI
+# ---------------------------------------------------------
+st.sidebar.header("📌 เมนูและการตั้งค่า")
+selected_source = st.sidebar.selectbox("เลือกแหล่งข่าว:", ["ทุกแหล่งข่าว"] + list(rss_sources.keys()))
 
-displayed_count = 0
-for item in source_items:
-    title = item['title']
-    link = item['link']
+if st.sidebar.button("🔄 ดึงข่าวใหม่สดๆ"):
+    with st.spinner("กำลังดึงข่าวสดล่าสุดจากทุกแหล่ง..."):
+        update_all_news()
+        st.success("อัปเดตข่าวใหม่เรียบร้อย!")
+        st.rerun()
+
+filter_status = st.sidebar.radio("ตัวกรองสถานะ:", ["ทั้งหมด", "ยังไม่ได้อ่าน", "อ่านแล้ว"])
+
+all_items = list(news_db.values())
+if selected_source != "ทุกแหล่งข่าว":
+    all_items = [i for i in all_items if i.get('source') == selected_source]
+
+if filter_status == "ยังไม่ได้อ่าน":
+    all_items = [i for i in all_items if not user_status.get(i['id'], {}).get('read', False)]
+elif filter_status == "อ่านแล้ว":
+    all_items = [i for i in all_items if user_status.get(i['id'], {}).get('read', False)]
+
+st.subheader(f"📰 รายการข่าว ({len(all_items)} ข่าว)")
+
+if not all_items:
+    st.info("ไม่มีรายการข่าวที่จะแสดง สามารถกดปุ่ม '🔄 ดึงข่าวใหม่สดๆ' ด้านข้างได้เลยครับ")
+
+for item in all_items:
+    item_id = item['id']
+    st_item = user_status.get(item_id, {})
+    is_read = st_item.get('read', False)
+    summary_text = st_item.get('summary', "")
+
+    read_badge = "✅ [อ่านแล้ว]" if is_read else "🆕 [ยังไม่อ่าน]"
     
-    # Read user status from separate status dictionary
-    status_entry = user_status.get(link, {})
-    is_read = status_entry.get('is_read', False)
-    analysis_data = status_entry.get('analysis', None)
-    
-    if read_filter == "ยังไม่ได้อ่านเท่านั้น" and is_read:
-        continue
-    if read_filter == "อ่านแล้วเท่านั้น" and not is_read:
-        continue
-        
-    if keyword_filter and keyword_filter.lower() not in title.lower():
-        continue
+    with st.expander(f"{read_badge} {item['title']} - ({item.get('source', '')})"):
+        st.write(f"**วันที่:** {item.get('pub_date', '')}")
+        st.write(f"**ลิงก์ต้นทาง:** [{item['link']}]({item['link']})")
+        st.write(f"**รายละเอียดสังเขป:** {item.get('description', '')}")
 
-    displayed_count += 1
-    
-    status_badge = "✅ อ่านแล้ว" if is_read else "🔵 ข่าวใหม่"
-    date_badge = item.get("added_date", "")
-    
-    col_title, col_btn = st.columns([4, 1])
-    with col_title:
-        st.markdown(f"### • [{title}]({link})")
-        st.caption(f"วันที่บันทึก: {date_badge} | สถานะ: {status_badge}")
-    
-    with col_btn:
-        btn_label = "Mark Unread" if is_read else "✓ อ่านแล้ว"
-        if st.button(btn_label, key=f"read_btn_{link}"):
-            if link not in user_status:
-                user_status[link] = {}
-            user_status[link]['is_read'] = not is_read
-            user_status[link]['updated_at'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            sync_user_status_to_github(user_status)
-            st.rerun()
-
-    has_valid_analysis = analysis_data and isinstance(analysis_data, dict) and "screen_text" in analysis_data
-
-    if not has_valid_analysis:
-        if st.button("✨ สรุปเนื้อหาด้วย AI", key=f"sum_btn_{link}"):
-            with st.spinner("Gemini กำลังวิเคราะห์ประเด็นข่าว..."):
-                raw_analysis = analyze_headline(title, is_mfa, is_thai)
-                
-                if raw_analysis:
-                    screen_text, audio_script = split_analysis(raw_analysis)
-                    if link not in user_status:
-                        user_status[link] = {}
-                    user_status[link]['analysis'] = {
-                        "screen_text": screen_text,
-                        "audio_script": audio_script
-                    }
-                    user_status[link]['is_read'] = True  # Auto mark as read upon AI summary
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            if is_read:
+                if st.button("Mark as Unread", key=f"unread_{item_id}"):
+                    if item_id in user_status:
+                        user_status[item_id]['read'] = False
+                        sync_user_status_to_github(user_status)
+                        st.rerun()
+            else:
+                if st.button("✓ อ่านแล้ว", key=f"read_{item_id}"):
+                    if item_id not in user_status:
+                        user_status[item_id] = {}
+                    user_status[item_id]['read'] = True
                     sync_user_status_to_github(user_status)
                     st.rerun()
-                else:
-                    st.error("ไม่สามารถเรียก Gemini API ได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง")
-    else:
-        screen_text = analysis_data.get("screen_text")
-        audio_script = analysis_data.get("audio_script", "")
-        
-        if screen_text:
-            st.info(screen_text)
 
-        if st.button("🔊 ฟังเสียงสรุปข่าว", key=f"audio_btn_{link}"):
-            with st.spinner("กำลังเตรียมเสียงบรรยาย..."):
-                clean_audio_text = re.sub(r'[*#]', '', audio_script)
-                link_hash = hashlib.md5(link.encode('utf-8')).hexdigest()[:10]
-                audio_filename = os.path.join(AUDIO_DIR, f"audio_{link_hash}.mp3")
-                voice_id = "th-TH-NiwatNeural" if is_thai else "en-GB-RyanNeural"
-                
-                try:
-                    asyncio.run(generate_audio_file(clean_audio_text, audio_filename, voice_id))
-                    if os.path.exists(audio_filename):
-                        with open(audio_filename, "rb") as audio_bytes:
-                            st.audio(audio_bytes.read(), format="audio/mp3")
-                except Exception:
-                    st.error("ไม่สามารถสร้างไฟล์เสียงได้ในขณะนี้")
+        with col2:
+            if st.button("✨ สรุปเนื้อหาด้วย AI (Gemini)", key=f"sum_{item_id}"):
+                with st.spinner("AI กำลังวิเคราะห์ข่าวและสรุปประเด็นสำหรับสอบ กต. ..."):
+                    full_text = scrape_full_article(item['link'])
+                    summary_result = generate_summary(item['title'], item.get('description', ''), full_text)
+                    if item_id not in user_status:
+                        user_status[item_id] = {}
+                    user_status[item_id]['summary'] = summary_result
+                    user_status[item_id]['read'] = True
+                    sync_user_status_to_github(user_status)
+                    st.rerun()
 
-    st.write("---")
+        if summary_text:
+            st.markdown("---")
+            st.markdown("### 🤖 บทสรุปและประเด็นวิเคราะห์โดย AI")
+            st.markdown(summary_text)
 
-if displayed_count == 0:
-    st.info("กำลังดึงข่าวสดใหม่สำหรับหมวดนี้ หรือไม่พบข่าวตามตัวกรองที่คุณเลือกครับ")
+            if st.button("🔊 ฟังเสียงสรุปข่าว (TTS)", key=f"tts_{item_id}"):
+                with st.spinner("กำลังแปลงข้อความสรุปเป็นเสียง..."):
+                    audio_file = get_audio_file(summary_text, item_id)
+                    st.audio(audio_file)
