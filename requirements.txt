@@ -1,5 +1,5 @@
 streamlit
-requests
 beautifulsoup4
 edge-tts
-google-genai
+google-generativeai
+requests
