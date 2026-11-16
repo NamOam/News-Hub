@@ -161,7 +161,7 @@ except Exception:
     pass
 
 # ---------------------------------------------------------
-# Gemini Summarizer Engine (อัปเดตเป็น gemini-3.8-flash และ 3.6-flash)
+# Gemini Summarizer Engine
 # ---------------------------------------------------------
 def analyze_headline(headline_title, is_mfa_source, is_thai_source):
     client = get_gemini_client(API_KEY)
@@ -212,14 +212,14 @@ def analyze_headline(headline_title, is_mfa_source, is_thai_source):
         f"- If THAI, write purely in native Thai script. Abbreviate titles naturally."
     )
     
-    # ใช้ชื่อรุ่น Gemini ล่าสุด
-    models_to_try = ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.5-flash-lite']
+    models_to_try = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash']
     for model_name in models_to_try:
         try:
             response = client.models.generate_content(model=model_name, contents=prompt)
             if response and hasattr(response, 'text') and response.text:
                 return response.text
-        except Exception:
+        except Exception as e:
+            st.toast(f"{model_name}: {e}")
             continue
             
     return None
@@ -242,7 +242,6 @@ st.header(f"📰 ข่าวสาร: {selected_source}")
 is_mfa = "MFA" in selected_source
 is_thai = is_mfa or ("Thai" in selected_source)
 
-# Filter DB items
 source_items = [item for item in db.values() if item.get("source") == selected_source]
 source_items.sort(key=lambda x: x.get("added_date", ""), reverse=True)
 
@@ -279,7 +278,6 @@ for item in source_items:
 
     analysis_data = item.get("analysis")
     
-    # เช็คว่ามีข้อมูลสรุป หรือเป็นข้อความ Error เก่าค้างอยู่หรือไม่
     has_valid_analysis = analysis_data and isinstance(analysis_data, dict) and "screen_text" in analysis_data and "AI Analysis Error" not in str(analysis_data.get("screen_text"))
 
     if not has_valid_analysis:
