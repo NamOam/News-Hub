@@ -161,7 +161,7 @@ except Exception:
     pass
 
 # ---------------------------------------------------------
-# Gemini Summarizer Engine
+# Gemini Summarizer Engine (Auto-Discovery)
 # ---------------------------------------------------------
 def analyze_headline(headline_title, is_mfa_source, is_thai_source):
     client = get_gemini_client(API_KEY)
@@ -212,14 +212,25 @@ def analyze_headline(headline_title, is_mfa_source, is_thai_source):
         f"- If THAI, write purely in native Thai script. Abbreviate titles naturally."
     )
     
-    models_to_try = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash']
+    # Auto-discover active models supported by your API key
+    models_to_try = []
+    try:
+        for m in client.models.list():
+            m_name = m.name.replace("models/", "")
+            if "gemini" in m_name and "flash" in m_name:
+                models_to_try.append(m_name)
+    except Exception:
+        pass
+
+    if not models_to_try:
+        models_to_try = ['gemini-flash-latest', 'gemini-2.0-flash', 'gemini-2.0-flash-lite']
+
     for model_name in models_to_try:
         try:
             response = client.models.generate_content(model=model_name, contents=prompt)
             if response and hasattr(response, 'text') and response.text:
                 return response.text
         except Exception as e:
-            st.toast(f"{model_name}: {e}")
             continue
             
     return None
